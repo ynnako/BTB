@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
 	int Shared;
 	if (strcmp(elemnts[6], "using_share_lsb") == 0) {
 		Shared = 1;
-  } else if (strcmp(elemnts[6], "using_share_mid") == 0) {
+	} else if (strcmp(elemnts[6], "using_share_mid") == 0) {
 		Shared = 2;
 	} else if (strcmp(elemnts[6], "not_using_share") == 0) {
 		Shared = 0;
@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
 	}
 
 	if (BP_init(btbSize, historySize, tagSize,fsmState, isGlobalHist,
-			isGlobalTable, Shared) < 0) {
+				isGlobalTable, Shared) < 0) {
 		fprintf(stderr, "Predictor init failed\n");
 		exit(8);
 	}
