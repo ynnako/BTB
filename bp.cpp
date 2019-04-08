@@ -42,7 +42,8 @@ public:
 	bool check_if_tag_exists(unsigned pc) const;
 	void get_entry_indexes(unsigned pc, unsigned &entry_num ,unsigned &history_reg_num, unsigned &table_num, unsigned &st_machine_num) const;
 	bool get_prediction(uint32_t pc, uint32_t *dst) const;
-	void update_bhr(unsigned history_reg_num, uint32_t target_pc, uint32_t dst , bool taken);
+	void update_bhr(unsigned history_reg_num, bool taken);
+	void update_stats(uint32_t target_pc, uint32_t dst , bool taken);
 	void update_st_machine(unsigned table_num, unsigned st_machine_num, bool taken);
 	void set_entry(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst);
 	unsigned get_size()const;
@@ -121,11 +122,14 @@ bool btb::get_prediction(uint32_t pc, uint32_t *dst) const {
 	return false;
 }
 
-void btb::update_bhr(unsigned history_reg_num, uint32_t target_pc, uint32_t dst ,bool taken ) {
+void btb::update_bhr(unsigned history_reg_num, bool taken) {
+	this->history_reg[history_reg_num] = (( this->history_reg[history_reg_num] << 1)+ taken) & this->m_history_mask;
+}
+
+void btb::update_stats(uint32_t target_pc, uint32_t dst, bool taken) {
 	bool prediction_correct = ((target_pc == dst) and taken) or (!taken and target_pc != dst);
 	this->m_num_of_branches++;
 	this->m_num_of_flushes += !prediction_correct;
-	this->history_reg[history_reg_num] = (( this->history_reg[history_reg_num] << 1)+ prediction_correct) & this->m_history_mask;
 }
 
 void btb::update_st_machine(unsigned table_num, unsigned st_machine_num, bool taken) {
@@ -143,18 +147,19 @@ void btb::set_entry(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_ds
 	}
 	this->btb_table[entry_num].target = targetPc;
 	this->update_st_machine(table_num , st_machine_num ,taken);
-	this->update_bhr(history_reg_num , targetPc , pred_dst , taken);
+	this->update_bhr(history_reg_num, taken);
+	this->update_stats(targetPc , pred_dst , taken);
 
 }
 
 unsigned btb::get_size() const {
 	int num_of_tables = this->m_isGlobalTable ? 1 : this->m_btbSize;
 	int num_of_history_regs = this->m_isGlobalHist ? 1 : this->m_btbSize;
-	int btb_size = this->m_btbSize * (this->m_tagSize + 32); // i need to ask if this includes the two lsb's
+	int btb_size = this->m_btbSize * (this->m_tagSize + 30);
 	int history_size = num_of_history_regs * this->m_historySize;
-	int table_size = num_of_tables * 2 * (1 << this->m_historySize);
+	int state_machine_table_size = num_of_tables * 2 * (1 << this->m_historySize);
 
-	return btb_size + history_size + table_size;
+	return static_cast<unsigned int>(btb_size + history_size + state_machine_table_size);
 }
 
 unsigned btb::get_num_of_branches() const {
@@ -164,6 +169,8 @@ unsigned btb::get_num_of_branches() const {
 unsigned btb::get_num_of_flushes() const {
 	return this->m_num_of_flushes;
 }
+
+
 
 
 btb table;
