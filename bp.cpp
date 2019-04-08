@@ -23,23 +23,31 @@ private:
 	uint32_t history_reg[MAX_BTB_TABLE_SIZE];
 	int m_history_mask;
 	unsigned m_btbSize;
+	unsigned m_tagSize;
+	unsigned m_historySize;
 	unsigned m_default_State;
-	unsigned m_table_current_size;
+	unsigned m_num_of_flushes;
+	unsigned m_num_of_branches;
+	unsigned m_address_mask;
 	int m_shared;
 	bool m_isGlobalHist;
 	bool m_isGlobalTable;
-	int m_xor_mask;
+	int m_xor_shift;
 	int m_tag_mask;
 
 public:
 	void init_btb(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState,
 				  bool isGlobalHist, bool isGlobalTable, int Shared);
-	void init_state_table(unsigned line_num);
-	bool get_entry_indexes(unsigned pc , unsigned &entry_num , unsigned &history_reg_num , unsigned &table_num , unsigned &st_machine_num) const;
+	void init_state_table(int line_num);
+	bool check_if_tag_exists(unsigned pc) const;
+	void get_entry_indexes(unsigned pc, unsigned &entry_num ,unsigned &history_reg_num, unsigned &table_num, unsigned &st_machine_num) const;
 	bool get_prediction(uint32_t pc, uint32_t *dst) const;
 	void update_bhr(unsigned history_reg_num, uint32_t target_pc, uint32_t dst , bool taken);
-	void update_st_machine(unsigned table_num, uint32_t st_machine_num, bool taken);
+	void update_st_machine(unsigned table_num, unsigned st_machine_num, bool taken);
 	void set_entry(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst);
+	unsigned get_size()const;
+	unsigned get_num_of_branches() const;
+	unsigned get_num_of_flushes() const;
 
 
 
@@ -49,19 +57,23 @@ void btb::init_btb(unsigned btbSize, unsigned historySize, unsigned tagSize, uns
 				   bool isGlobalTable, int Shared) {
 
 
-	this->m_table_current_size = 0;
+	this->m_num_of_branches = 0;
+	this->m_num_of_flushes = 0;
 	this->m_btbSize = btbSize;
+	this->m_tagSize= tagSize;
+	this->m_historySize = historySize;
 	this->m_shared = Shared;
-	this->m_tag_mask = static_cast<uint32_t> (((1 << tagSize) - 1) << 2);
-	this->m_history_mask = ((1 << historySize ) - 1);
+	this->m_tag_mask = static_cast<uint32_t> (1 << tagSize) - 1;
+	this->m_history_mask = (1 << historySize ) - 1;
+	this->m_address_mask = btbSize - 1;
 	this->m_isGlobalHist = isGlobalHist;
 	this->m_isGlobalTable = isGlobalTable;
 	this->m_default_State = fsmState;
-	if (Shared == 1) this->m_xor_mask = this->m_history_mask << 2;
-	else if (Shared == 2) this->m_xor_mask = this->m_history_mask << 16;
-	else this->m_xor_mask = 0xFFFFFFFC;
+	if (Shared == 1) this->m_xor_shift = 2;
+	else if (Shared == 2) this->m_xor_shift =  16;
+	else this->m_xor_shift = 0;
 
-	for(unsigned i = 0 ; i < MAX_BTB_TABLE_SIZE ; i++){
+	for(int i = 0 ; i < MAX_BTB_TABLE_SIZE ; i++){
 		this->btb_table[i].tag = 0;
 		this->btb_table[i].target = 0;
 		this->history_reg[i] = 0;
@@ -71,82 +83,37 @@ void btb::init_btb(unsigned btbSize, unsigned historySize, unsigned tagSize, uns
 
 }
 
-void btb::init_state_table(unsigned line_num) {
+void btb::init_state_table(int line_num) {
 	for(int i = 0 ; i < (1 << MAX_HISTORY_SIZE)  ; i++ ){
 		this->st_table[line_num][i] = this->m_default_State;
 	}
 }
 
-bool
+bool btb::check_if_tag_exists(unsigned pc) const {
+	unsigned pc_shifted = pc >> 2;
+	unsigned entry_address = pc_shifted & this->m_address_mask;
+	unsigned tag = pc_shifted & this->m_tag_mask;
+	return this->btb_table[entry_address].tag == tag;
+}
+
+void
 btb::get_entry_indexes(unsigned pc, unsigned &entry_num ,unsigned &history_reg_num, unsigned &table_num, unsigned &st_machine_num) const {
 
-	uint32_t tag = (pc & this->m_tag_mask) >> 2;
-
-	for(unsigned i = 0 ; i < this->m_btbSize ; i++){
-		if(tag == this->btb_table[i].tag){ // line exists in table
-			entry_num = i;
-			if(m_isGlobalTable){
-				table_num = 0; //we have only one state machine table
-
-				if(m_isGlobalHist) {
-					history_reg_num = 0; //we have only one history reg
-					st_machine_num = this->history_reg[0];
-				}
-				else {
-					history_reg_num = i;
-					st_machine_num = this->history_reg[i];
-				}
-
-				if(m_shared == 1){
-					st_machine_num = ((pc & this->m_xor_mask) >> 2) ^ this->history_reg[history_reg_num]; //get only the relevant bits form pc and xor with history reg
-				}
-				else if(m_shared ==2){
-					st_machine_num = ((pc & this->m_xor_mask) >> 16) ^ this->history_reg[history_reg_num];//get only the relevant bits form pc and xor with history reg
-				}
-			}
-			else{
-				table_num = i;
-				history_reg_num = i;
-				st_machine_num = this->history_reg[i];
-			}
-			return true;
-		}
-	}
-
-	//we didnt find the tag in the btb table
-	entry_num = this->m_table_current_size;
-	if(m_isGlobalTable){
-		table_num = 0;
-
-		if(m_isGlobalHist) {
-			history_reg_num = 0;
-			st_machine_num = this->history_reg[0];
-		}
-		else {
-			history_reg_num = this->m_table_current_size;
-			st_machine_num = this->history_reg[history_reg_num];
-		}
-
-		if(m_shared == 1){
-			st_machine_num = ((pc & this->m_xor_mask) >> 2) ^ this->history_reg[history_reg_num];
-		}
-		else if(m_shared ==2){
-			st_machine_num = ((pc & this->m_xor_mask) >> 16) ^ this->history_reg[history_reg_num];
-		}
-	}
-	else{
-		table_num = this->m_table_current_size;
-		history_reg_num = this->m_table_current_size;
-		st_machine_num = this->history_reg[m_table_current_size];
-	}
-
-	return false;
+	unsigned pc_shifted = pc >> 2;
+	unsigned pc_xor_shifted = pc >> this->m_xor_shift; //if using Gshare or Lshare - shift the relevant bits to lsb
+	unsigned pc_xor_bits;
+	entry_num = pc_shifted & this->m_address_mask;
+	history_reg_num = this->m_isGlobalHist ? 0 : entry_num; //if global history we only use the index 0 in the history_reg array
+	table_num = this->m_isGlobalTable ? 0 : entry_num; //if global table we only use the index 0 in the st_table array
+	pc_xor_bits = pc_xor_shifted & this->m_history_mask; //masking because we need only as much bits as in the register
+	st_machine_num = m_shared == 0 ? this->history_reg[history_reg_num] : this->history_reg[history_reg_num] ^ pc_xor_bits;
 }
 
 bool btb::get_prediction(uint32_t pc, uint32_t *dst) const {
 
 	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0 , st_machine_num = 0;
-	if(this->get_entry_indexes(pc , entry_num , history_reg_num , table_num , st_machine_num) && this->st_table[table_num][st_machine_num] >= 2){
+	this->get_entry_indexes(pc , entry_num , history_reg_num , table_num , st_machine_num);
+	if(this->check_if_tag_exists(pc) && this->st_table[table_num][st_machine_num] >= 2){
 		*dst = this->btb_table[entry_num].target;
 		return true;
 	}
@@ -156,27 +123,46 @@ bool btb::get_prediction(uint32_t pc, uint32_t *dst) const {
 
 void btb::update_bhr(unsigned history_reg_num, uint32_t target_pc, uint32_t dst ,bool taken ) {
 	bool prediction_correct = ((target_pc == dst) and taken) or (!taken and target_pc != dst);
+	this->m_num_of_branches++;
+	this->m_num_of_flushes += !prediction_correct;
 	this->history_reg[history_reg_num] = (( this->history_reg[history_reg_num] << 1)+ prediction_correct) & this->m_history_mask;
 }
 
-void btb::update_st_machine(unsigned table_num, uint32_t st_machine_num, bool taken) {
+void btb::update_st_machine(unsigned table_num, unsigned st_machine_num, bool taken) {
 	if(taken && this->st_table[table_num][st_machine_num] < 3) this->st_table[table_num][st_machine_num]++;
 	else if(!taken && this->st_table[table_num][st_machine_num] > 0) this->st_table[table_num][st_machine_num]--;
 }
 
 void btb::set_entry(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst) {
-	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0;
-	unsigned st_machine_num = 0;
-	if(!this->get_entry_indexes(pc , entry_num , history_reg_num , table_num , st_machine_num)){
+	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0 , st_machine_num = 0;
+	this->get_entry_indexes(pc , entry_num , history_reg_num , table_num , st_machine_num);
+	if(!this->check_if_tag_exists(pc)){
 		this->btb_table[entry_num].tag = (pc & this->m_tag_mask) >> 2;
-		this->btb_table[entry_num].target = targetPc;
 		if(!this->m_isGlobalTable && !this->m_isGlobalHist) this->init_state_table(table_num);
 		if(!this->m_isGlobalHist) this->history_reg[history_reg_num] = 0;
-		this->m_table_current_size = (this->m_table_current_size + 1) % this->m_btbSize;
 	}
+	this->btb_table[entry_num].target = targetPc;
 	this->update_st_machine(table_num , st_machine_num ,taken);
 	this->update_bhr(history_reg_num , targetPc , pred_dst , taken);
 
+}
+
+unsigned btb::get_size() const {
+	int num_of_tables = this->m_isGlobalTable ? 1 : this->m_btbSize;
+	int num_of_history_regs = this->m_isGlobalHist ? 1 : this->m_btbSize;
+	int btb_size = this->m_btbSize * (this->m_tagSize + 32); // i need to ask if this includes the two lsb's
+	int history_size = num_of_history_regs * this->m_historySize;
+	int table_size = num_of_tables * 2 * (1 << this->m_historySize);
+
+	return btb_size + history_size + table_size;
+}
+
+unsigned btb::get_num_of_branches() const {
+	return this->m_num_of_branches;
+}
+
+unsigned btb::get_num_of_flushes() const {
+	return this->m_num_of_flushes;
 }
 
 
@@ -191,6 +177,9 @@ int BP_init(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned f
 
 }
 
+
+
+
 bool BP_predict(uint32_t pc, uint32_t *dst){
 	return table.get_prediction(pc , dst);
 }
@@ -200,6 +189,9 @@ void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
 }
 
 void BP_GetStats(SIM_stats *curStats){
+	curStats->size = table.get_size();
+	curStats->br_num = table.get_num_of_branches();
+	curStats->flush_num = table.get_num_of_flushes();
 	return;
 }
 
