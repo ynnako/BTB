@@ -141,8 +141,8 @@ void btb::set_entry(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_ds
 	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0 , st_machine_num = 0;
 	this->get_entry_indexes(pc , entry_num , history_reg_num , table_num , st_machine_num);
 	if(!this->check_if_tag_exists(pc)){
-		this->btb_table[entry_num].tag = (pc & this->m_tag_mask) >> 2;
-		if(!this->m_isGlobalTable && !this->m_isGlobalHist) this->init_state_table(table_num);
+		this->btb_table[entry_num].tag = (pc >> 2) & this->m_tag_mask;
+		if(!this->m_isGlobalTable ) this->init_state_table(table_num);
 		if(!this->m_isGlobalHist) this->history_reg[history_reg_num] = 0;
 	}
 	this->btb_table[entry_num].target = targetPc;
