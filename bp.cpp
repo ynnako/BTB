@@ -4,6 +4,7 @@
 #include "bp_api.h"
 
 #define MAX_HISTORY_SIZE 8
+#define MAX_NUMBER_OF_STATE_MACHINES 256
 #define MAX_BTB_TABLE_SIZE 32
 
 
@@ -18,13 +19,13 @@ struct entry_line {
 
 class btb {
 private:
-	entry_line btbTable[MAX_BTB_TABLE_SIZE];
-	unsigned stateMachineTable[MAX_BTB_TABLE_SIZE][2 << (MAX_HISTORY_SIZE - 1)];
+	entry_line btbTable[MAX_BTB_TABLE_SIZE]; //this array is an array of structs that hold the tag and the targetPc for each entry
+	unsigned stateMachineTable[MAX_BTB_TABLE_SIZE][MAX_NUMBER_OF_STATE_MACHINES]; // 2d array of state machines
 	unsigned historyRegTable[MAX_BTB_TABLE_SIZE];
-	int xorShiftAmount;
-	int historyBitsMask;
-	int tagMaskBits;
-	int addressBitsMask;
+	int xorShiftAmount; //if using shared mid should be 16 if using shared lsb should be 2 o.w. 0
+	int historyBitsMask; //mask any unnecessary bits according to history register size in any calculation regarding to history reg.
+	int tagMaskBits; //mask any unnecessary bits according to tag size in any calculation regarding to the tag.
+	int addressBitsMask; //mask any unnecessary bits according to btbsize
 	int isLGShared;
 	bool isGlobalHist;
 	bool isGlobalTable;
@@ -32,10 +33,8 @@ private:
 	int tagSize;
 	int historyRegisterSize;
 	unsigned defaultState;
-	int numOfFlushes;
-	int numOfBranches;
-
-
+	unsigned numOfFlushes;
+	unsigned numOfBranches;
 
 public:
 	void initBtb(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState,
@@ -48,33 +47,28 @@ public:
 	void updateHistoryReg(unsigned historyRegTableIndex, bool taken);
 	void updateStats(uint32_t targetPc, uint32_t dst, bool taken, bool prediction);
 	void updateStateMachine(unsigned stateMachineTableIndex, unsigned stateMachineIndex, bool taken);
-	void setEntry(uint32_t pc, uint32_t targetPc, bool taken, uint32_t predictedDest);
+	void setEntry(uint32_t pc, uint32_t targetPc, bool taken);
 	unsigned getBtbSize()const;
-	unsigned getNumOfBranches() const;
-	unsigned getNumOfFlushes() const;
-
-
-
+	unsigned int getNumOfBranches() const;
+	unsigned int getNumOfFlushes() const;
 };
 
 void btb::initBtb(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState, bool isGlobalHist,
 				  bool isGlobalTable, int Shared) {
-
-
 	this->numOfBranches = 0;
 	this->numOfFlushes = 0;
 	this->btbSize = btbSize;
 	this->tagSize= tagSize;
 	this->historyRegisterSize = historySize;
 	this->isLGShared = Shared;
-	this->tagMaskBits = static_cast<uint32_t> (1 << tagSize) - 1;
-	this->historyBitsMask = (1 << historySize ) - 1;
+	this->tagMaskBits = static_cast<uint32_t> (1 << tagSize) - 1; //e.g. tagSize==3 then ((1 << 3) - 1) :: ((0001 << 3) - 1) => 0111
+	this->historyBitsMask = (1 << historySize ) - 1; // same claculation as tagMaskBits
 	this->addressBitsMask = btbSize - 1;
 	this->isGlobalHist = isGlobalHist;
 	this->isGlobalTable = isGlobalTable;
 	this->defaultState = fsmState;
-	if (Shared == 1) this->xorShiftAmount = 2;
-	else if (Shared == 2) this->xorShiftAmount =  16;
+	if (Shared == 1) this->xorShiftAmount = 2; //if using lsb shared then we should shift 2 bits to the right and the xor
+	else if (Shared == 2) this->xorShiftAmount =  16; //if using lsb shared then we should shift 16 bits to the right and the xor
 	else this->xorShiftAmount = 0;
 
 	for(int i = 0 ; i < MAX_BTB_TABLE_SIZE ; i++){
@@ -141,7 +135,7 @@ void btb::updateStateMachine(unsigned stateMachineTableIndex, unsigned stateMach
 	else if(!taken && this->stateMachineTable[stateMachineTableIndex][stateMachineIndex] > 0) this->stateMachineTable[stateMachineTableIndex][stateMachineIndex]--;
 }
 
-void btb::setEntry(uint32_t pc, uint32_t targetPc, bool taken, uint32_t predictedDest) {
+void btb::setEntry(uint32_t pc, uint32_t targetPc, bool taken) {
 	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0 , st_machine_num = 0;
 	this->getEntryIndexes(pc, entry_num, history_reg_num, table_num, st_machine_num);
 	if(!this->isTagInTable(pc)){
@@ -166,14 +160,13 @@ unsigned btb::getBtbSize() const {
 	return static_cast<unsigned int>(btbSizeBits + historyTableSizeBits + stateMachineTablesSizeBits);
 }
 
-unsigned btb::getNumOfBranches() const {
+unsigned int btb::getNumOfBranches() const {
 	return this->numOfBranches;
 }
 
-unsigned btb::getNumOfFlushes() const {
+unsigned int btb::getNumOfFlushes() const {
 	return this->numOfFlushes;
 }
-
 
 
 
@@ -199,13 +192,12 @@ void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
 	uint32_t dest;
 	bool isTaken = table.getBranchPrediction(pc, &dest);
 	table.updateStats(targetPc, pred_dst, taken, isTaken);
-	table.setEntry(pc, targetPc, taken, pred_dst);
+	table.setEntry(pc, targetPc, taken);
 }
 
 void BP_GetStats(SIM_stats *curStats){
 	curStats->size = table.getBtbSize();
 	curStats->br_num = table.getNumOfBranches();
 	curStats->flush_num = table.getNumOfFlushes();
-	return;
 }
 
