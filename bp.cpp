@@ -6,6 +6,8 @@
 #define MAX_HISTORY_SIZE 8
 #define MAX_NUMBER_OF_STATE_MACHINES 256
 #define MAX_BTB_TABLE_SIZE 32
+#define MAX_STATE 3
+#define MAX_TAG_SIZE 32
 
 
 
@@ -29,6 +31,7 @@ private:
 	int isLGShared;
 	bool isGlobalHist;
 	bool isGlobalTable;
+	bool lastPrediction;
 	int btbSize;
 	int tagSize;
 	int historyRegisterSize;
@@ -43,11 +46,12 @@ public:
 	bool isTagInTable(unsigned pc) const;
 	void getEntryIndexes(unsigned pc, unsigned &entryIndex, unsigned &historyRegIndex, unsigned &stateMachineTableIndex,
 						 unsigned &stateMachineIndex) const;
-	bool getBranchPrediction(uint32_t pc, uint32_t *dst) const;
+	bool getBranchPrediction(uint32_t pc, uint32_t *dst);
 	void updateHistoryReg(unsigned historyRegTableIndex, bool taken);
 	void updateStats(uint32_t targetPc, uint32_t dst, bool taken, bool prediction);
 	void updateStateMachine(unsigned stateMachineTableIndex, unsigned stateMachineIndex, bool taken);
 	void setEntry(uint32_t pc, uint32_t targetPc, bool taken);
+	bool getLastPrediction() const;
 	unsigned getBtbSize()const;
 	unsigned int getNumOfBranches() const;
 	unsigned int getNumOfFlushes() const;
@@ -63,16 +67,17 @@ void btb::initBtb(unsigned btbSize, unsigned historySize, unsigned tagSize, unsi
 	this->isLGShared = Shared;
 	this->tagMaskBits = static_cast<uint32_t> (1 << tagSize) - 1; //e.g. tagSize==3 then ((1 << 3) - 1) :: ((0001 << 3) - 1) => 0111
 	this->historyBitsMask = (1 << historySize ) - 1; // same claculation as tagMaskBits
-	this->addressBitsMask = btbSize - 1;
+	this->addressBitsMask = btbSize - 1;// e.g. btbSize==16 then 16 - 1 = 15 which is 01111 in binary and would mask any bits above bit number 3 (or 4 depends on how we count)
 	this->isGlobalHist = isGlobalHist;
 	this->isGlobalTable = isGlobalTable;
+	this->lastPrediction = false;
 	this->defaultState = fsmState;
-	if (Shared == 1) this->xorShiftAmount = 2; //if using lsb shared then we should shift 2 bits to the right and the xor
-	else if (Shared == 2) this->xorShiftAmount =  16; //if using lsb shared then we should shift 16 bits to the right and the xor
+	if (Shared == 1) this->xorShiftAmount = 2; //if using lsb shared then we should shift 2 bits to the right before doing xor with the history reg
+	else if (Shared == 2) this->xorShiftAmount =  16; //if using lsb shared then we should shift 16 bits to the right before doing xor with the history reg
 	else this->xorShiftAmount = 0;
 
 	for(int i = 0 ; i < MAX_BTB_TABLE_SIZE ; i++){
-		this->btbTable[i].tag = -1;
+		this->btbTable[i].tag = 1;
 		this->btbTable[i].target = 0;
 		this->historyRegTable[i] = 0;
 		this->initStateMachineTable(i);
@@ -108,14 +113,16 @@ btb::getEntryIndexes(unsigned pc, unsigned &entryIndex, unsigned &historyRegInde
 	stateMachineIndex = isLGShared == 0 ? this->historyRegTable[historyRegIndex] : this->historyRegTable[historyRegIndex] ^ pc_xor_bits;
 }
 
-bool btb::getBranchPrediction(uint32_t pc, uint32_t *dst) const {
+bool btb::getBranchPrediction(uint32_t pc, uint32_t *dst) {
 
 	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0 , st_machine_num = 0;
 	this->getEntryIndexes(pc, entry_num, history_reg_num, table_num, st_machine_num);
 	if(this->isTagInTable(pc) && this->stateMachineTable[table_num][st_machine_num] >= 2){
 		*dst = this->btbTable[entry_num].target;
+		this->lastPrediction = true;
 		return true;
 	}
+	this->lastPrediction = false;
 	*dst = pc + 4;
 	return false;
 }
@@ -131,8 +138,12 @@ void btb::updateStats(uint32_t targetPc, uint32_t dst, bool taken, bool predicti
 }
 
 void btb::updateStateMachine(unsigned stateMachineTableIndex, unsigned stateMachineIndex, bool taken) {
-	if(taken && this->stateMachineTable[stateMachineTableIndex][stateMachineIndex] < 3) this->stateMachineTable[stateMachineTableIndex][stateMachineIndex]++;
-	else if(!taken && this->stateMachineTable[stateMachineTableIndex][stateMachineIndex] > 0) this->stateMachineTable[stateMachineTableIndex][stateMachineIndex]--;
+	if(taken && this->stateMachineTable[stateMachineTableIndex][stateMachineIndex] < 3) {
+		this->stateMachineTable[stateMachineTableIndex][stateMachineIndex]++;
+	}
+	else if(!taken && this->stateMachineTable[stateMachineTableIndex][stateMachineIndex] > 0) {
+		this->stateMachineTable[stateMachineTableIndex][stateMachineIndex]--;
+	}
 }
 
 void btb::setEntry(uint32_t pc, uint32_t targetPc, bool taken) {
@@ -168,6 +179,9 @@ unsigned int btb::getNumOfFlushes() const {
 	return this->numOfFlushes;
 }
 
+bool btb::getLastPrediction() const {
+	return this->lastPrediction;
+}
 
 
 btb table;
@@ -175,7 +189,7 @@ btb table;
 
 int BP_init(unsigned btbSize, unsigned historySize, unsigned tagSize, unsigned fsmState,
 			bool isGlobalHist, bool isGlobalTable, int Shared){
-	if(btbSize > MAX_BTB_TABLE_SIZE || historySize > MAX_HISTORY_SIZE || tagSize > 32 || fsmState > 3) return -1;
+	if(btbSize > MAX_BTB_TABLE_SIZE || historySize > MAX_HISTORY_SIZE || tagSize > MAX_TAG_SIZE || fsmState > MAX_STATE) return -1;
 	table.initBtb(btbSize, historySize, tagSize, fsmState, isGlobalHist, isGlobalTable, Shared);
 	return 0;
 
@@ -189,8 +203,7 @@ bool BP_predict(uint32_t pc, uint32_t *dst){
 }
 
 void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
-	uint32_t dest;
-	bool isTaken = table.getBranchPrediction(pc, &dest);
+	bool isTaken = table.getLastPrediction();
 	table.updateStats(targetPc, pred_dst, taken, isTaken);
 	table.setEntry(pc, targetPc, taken);
 }
