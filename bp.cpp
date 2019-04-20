@@ -21,6 +21,7 @@ struct entry_line {
 
 class btb {
 private:
+	// all size's are fixed so no need for allocation
 	entry_line btbTable[MAX_BTB_TABLE_SIZE]; //this array is an array of structs that hold the tag and the targetPc for each entry
 	unsigned stateMachineTable[MAX_BTB_TABLE_SIZE][MAX_NUMBER_OF_STATE_MACHINES]; // 2d array of state machines
 	unsigned historyRegTable[MAX_BTB_TABLE_SIZE];
@@ -48,7 +49,7 @@ public:
 						 unsigned &stateMachineIndex) const;
 	bool getBranchPrediction(uint32_t pc, uint32_t *dst);
 	void updateHistoryReg(unsigned historyRegTableIndex, bool taken);
-	void updateStats(uint32_t targetPc, uint32_t dst, bool taken, bool prediction);
+	void updateStats(uint32_t pc, uint32_t targetPc, uint32_t dst, bool taken, bool prediction);
 	void updateStateMachine(unsigned stateMachineTableIndex, unsigned stateMachineIndex, bool taken);
 	void setEntry(uint32_t pc, uint32_t targetPc, bool taken);
 	bool getLastPrediction() const;
@@ -92,49 +93,54 @@ void btb::initStateMachineTable(int tableNum) {
 	}
 }
 
+//this method checks in the corresponding entry if the pc's tag is saved inside the entry
 bool btb::isTagInTable(unsigned pc) const {
 	int pc_shifted = pc >> 2;
-	int entry_address = pc_shifted & this->addressBitsMask;
-	int tag = pc_shifted & this->tagMaskBits;
+	int entry_address = pc_shifted & this->addressBitsMask; //because this is direct mapping - mask the unwanted bits.
+	int tag = pc_shifted & this->tagMaskBits; // mask the unwanted bits from the tag
 	return this->btbTable[entry_address].tag == tag;
 }
 
-void
-btb::getEntryIndexes(unsigned pc, unsigned &entryIndex, unsigned &historyRegIndex, unsigned &stateMachineTableIndex,
+
+// this method determines each index according to btb configuration
+void btb::getEntryIndexes(unsigned pc, unsigned &entryIndex, unsigned &historyRegIndex, unsigned &stateMachineTableIndex,
 					 unsigned &stateMachineIndex) const {
 
-	unsigned pc_shifted = pc >> 2;
-	unsigned pc_xor_shifted = pc >> this->xorShiftAmount; //if using Gshare or Lshare - shift the relevant bits to lsb
+	unsigned pc_shifted = pc >> 2; // ignore 2 lsb's
+	unsigned pc_xor_shifted = pc >> this->xorShiftAmount; //if using Gshare or Lshare - shift the relevant bits to lsb as explained in init method
 	unsigned pc_xor_bits;
-	entryIndex = pc_shifted & this->addressBitsMask;
+	entryIndex = pc_shifted & this->addressBitsMask; //mask unneeded bits for direct mapping
 	historyRegIndex = this->isGlobalHist ? 0 : entryIndex; //if global history we only use the index 0 in the historyRegTable array
 	stateMachineTableIndex = this->isGlobalTable ? 0 : entryIndex; //if global table we only use the index 0 in the stateMachineTable array
 	pc_xor_bits = pc_xor_shifted & this->historyBitsMask; //masking because we need only as much bits as in the register
 	stateMachineIndex = isLGShared == 0 ? this->historyRegTable[historyRegIndex] : this->historyRegTable[historyRegIndex] ^ pc_xor_bits;
 }
 
+// predict next pc
 bool btb::getBranchPrediction(uint32_t pc, uint32_t *dst) {
 
-	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0 , st_machine_num = 0;
-	this->getEntryIndexes(pc, entry_num, history_reg_num, table_num, st_machine_num);
-	if(this->isTagInTable(pc) && this->stateMachineTable[table_num][st_machine_num] >= 2){
+	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0 , st_machine_num = 0; //indexes for the btb
+	this->getEntryIndexes(pc, entry_num, history_reg_num, table_num, st_machine_num); //indexes are passed by reference
+	if(this->isTagInTable(pc) && this->stateMachineTable[table_num][st_machine_num] >= 2){ //if the pc's tag is save inside the btb and the corresponding state machine is ST or WT
 		*dst = this->btbTable[entry_num].target;
-		this->lastPrediction = true;
+		this->lastPrediction = true; // save this value so we wont have to call prediction again inside the update function
 		return true;
 	}
-	this->lastPrediction = false;
+	this->lastPrediction = false; // save this value so we wont have to call prediction again inside the update function
 	*dst = pc + 4;
 	return false;
 }
 
 void btb::updateHistoryReg(unsigned historyRegTableIndex, bool taken) {
 	this->historyRegTable[historyRegTableIndex] = (( this->historyRegTable[historyRegTableIndex] << 1)+ taken) & this->historyBitsMask;
+	// shift the history register to the left add the value of taken and then mask with the history's register's size mask
 }
 
-void btb::updateStats(uint32_t targetPc, uint32_t dst, bool taken, bool prediction) {
-	bool prediction_correct = (taken == prediction) and (((targetPc == dst) and taken) or (!taken and targetPc != dst));
+void btb::updateStats(uint32_t pc, uint32_t targetPc, uint32_t dst, bool taken, bool prediction) {
+	//first lets check if our prediction was correct
+	bool prediction_correct = ((taken == prediction) and (((targetPc == dst) and taken) or (!taken and targetPc != dst))) or (prediction and !taken and dst == pc + 4);
 	this->numOfBranches++;
-	this->numOfFlushes += !prediction_correct;
+	this->numOfFlushes += !prediction_correct; // if our prediction was incorrect, Flush!
 }
 
 void btb::updateStateMachine(unsigned stateMachineTableIndex, unsigned stateMachineIndex, bool taken) {
@@ -147,13 +153,13 @@ void btb::updateStateMachine(unsigned stateMachineTableIndex, unsigned stateMach
 }
 
 void btb::setEntry(uint32_t pc, uint32_t targetPc, bool taken) {
-	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0 , st_machine_num = 0;
-	this->getEntryIndexes(pc, entry_num, history_reg_num, table_num, st_machine_num);
-	if(!this->isTagInTable(pc)){
-		this->btbTable[entry_num].tag = (pc >> 2) & this->tagMaskBits;
+	unsigned entry_num = 0 , history_reg_num = 0 , table_num = 0 , st_machine_num = 0; //indexes for the btb
+	this->getEntryIndexes(pc, entry_num, history_reg_num, table_num, st_machine_num); //indexes are passed by reference
+	if(!this->isTagInTable(pc)){ //if we dont have the tag in the table we will need to add it and according to global/local reset the state machines and history reg
+		this->btbTable[entry_num].tag = (pc >> 2) & this->tagMaskBits; //set the new tag
 		if(!this->isGlobalTable ) this->initStateMachineTable(table_num);
 		if(!this->isGlobalHist) this->historyRegTable[history_reg_num] = 0;
-		this->getEntryIndexes(pc, entry_num, history_reg_num, table_num, st_machine_num);
+		this->getEntryIndexes(pc, entry_num, history_reg_num, table_num, st_machine_num); // our state machine index might be incorrect
 	}
 	this->updateStateMachine(table_num, st_machine_num, taken);
 	this->updateHistoryReg(history_reg_num, taken);
@@ -204,7 +210,7 @@ bool BP_predict(uint32_t pc, uint32_t *dst){
 
 void BP_update(uint32_t pc, uint32_t targetPc, bool taken, uint32_t pred_dst){
 	bool isTaken = table.getLastPrediction();
-	table.updateStats(targetPc, pred_dst, taken, isTaken);
+	table.updateStats(pc, targetPc, pred_dst, taken, isTaken);
 	table.setEntry(pc, targetPc, taken);
 }
 
